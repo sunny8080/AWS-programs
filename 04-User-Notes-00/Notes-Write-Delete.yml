@@ -1,0 +1,20 @@
+createNote:
+  handler: UserC.createNote
+  events:
+    - http:
+        method: post
+        path: /notes
+
+updateNote:
+  handler: UserC.updateNote
+  events:
+    - http:
+        method: put
+        path: /notes/{id}
+
+deleteNote:
+  handler: UserC.deleteNote
+  events:
+    - http:
+        method: delete
+        path: /notes/{id}

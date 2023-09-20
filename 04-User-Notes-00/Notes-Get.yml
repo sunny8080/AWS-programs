@@ -1,0 +1,24 @@
+getNotes:
+  name: getAllNotes
+  handler: UserC.getNotes
+  description: 'Get All notes'
+  events:
+    - http:
+        method: get
+        path: /notes
+
+getNotesOfUser:
+  handler: UserC.getNotesOfUser
+  description: 'Get All notes of a user'
+  events:
+    - http:
+        method: get
+        path: /notes/user/{user_id}
+
+
+getNote:
+  handler: UserC.getNote
+  events:
+    - http:
+        method: get
+        path: /notes/{id}

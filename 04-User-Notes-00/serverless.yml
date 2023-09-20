@@ -1,0 +1,207 @@
+service: notes-api
+frameworkVersion: '3'
+useDotenv: true
+
+plugins:
+  - serverless-offline
+  - serverless-iam-roles-per-function
+  - serverless-plugin-include-dependencies
+  - serverless-plugin-common-excludes
+
+custom:
+  serverless-offline:
+    reloadHandler: true
+    noTimeout: true
+
+provider:
+  name: aws
+  architecture: x86_64
+  region: ap-south-1
+  stage: ${opt:stage, 'dev'}
+  runtime: nodejs18.x
+  timeout: 10
+  versionFunctions: false
+  memorySize: 512
+  httpApi:
+    cors: true
+  environment:
+    # NOTES_TABLE: ${self:service}-${self:provider.stage}-NotesTable
+    NOTES_TABLE: ${self:resources.Resources.NotesTable.Properties.TableName}
+    NOTES_TABLE_INDEXES: ${self:resources.Resources.NotesTable.Properties.TableName}/index/*
+    # GIVEN_SECRET: ${env:MY_SECRET}
+    COGNITO_USERPOOL_ID: !Ref cognitoUserPoolNew
+    COGNITO_WEB_CLIENT_ID: !Ref cognitoUserPoolWebClient # TODO
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:ConditionCheckItem
+          Resource: # TODO
+            # - arn:aws:dynamodb:${opt:region, self:provider.region}:${aws:accountId}:table/${self:provider.environment.NOTES_TABLE}
+            # - arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.NOTES_TABLE}/index/note_id-glo-index
+            - !GetAtt NotesTable.Arn
+            - !Join ['', [!GetAtt NotesTable.Arn, '/index/note_id-glo-index']]
+
+resources:
+  Resources:
+    # Notes DynamoDb Table
+    NotesTable:
+      Type: AWS::DynamoDB::Table
+      # DeletionPolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-NotesTable
+        AttributeDefinitions:
+          - AttributeName: user_id
+            AttributeType: S
+          - AttributeName: note_id
+            AttributeType: S
+          - AttributeName: timestamp
+            AttributeType: N
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+          - AttributeName: timestamp
+            KeyType: RANGE
+        # BillingMode: PAY_PER_REQUEST
+        ProvisionedThroughput:
+          ReadCapacityUnits: 2
+          WriteCapacityUnits: 2
+        GlobalSecondaryIndexes:
+          - IndexName: note_id-glo-index
+            KeySchema:
+              - AttributeName: note_id
+                KeyType: HASH
+              - AttributeName: timestamp
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+            ProvisionedThroughput:
+              ReadCapacityUnits: 2
+              WriteCapacityUnits: 2
+
+    # Cognito User Pool
+    cognitoUserPoolNew:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: UserNotesPool-${self:provider.stage}
+        UsernameConfiguration:
+          CaseSensitive: false
+        AliasAttributes:
+          - 'preferred_username'
+        AccountRecoverySetting:
+          RecoveryMechanisms:
+            - Name: verified_email
+              Priority: 1
+        # DeletionProtection: 'ACTIVE'
+        AutoVerifiedAttributes:
+          - 'email'
+        Schema:
+          - Name: email
+            AttributeDataType: String
+            Required: true
+            Mutable: false
+          - Name: name
+            AttributeDataType: String
+            Required: true
+            Mutable: true
+
+    # Cognito User Pool Client
+    cognitoUserPoolWebClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: UserNotesClient
+        UserPoolId: !Ref cognitoUserPoolNew
+        AllowedOAuthFlowsUserPoolClient: true
+        AllowedOAuthFlows:
+          - implicit
+        CallbackURLs:
+          - http://localhost:3000
+        SupportedIdentityProviders:
+          - COGNITO
+        AllowedOAuthScopes:
+          - phone
+          - email
+          - openid
+
+    # Cognito User Pool Domain
+    cognitoUserPoolWebDomain:
+      Type: AWS::Cognito::UserPoolDomain
+      Properties:
+        Domain: user-notes-${self:provider.stage}
+        UserPoolId: !Ref cognitoUserPoolNew
+
+    # AWS SSM (System Manager) - Application parameters
+    # how to use - ${ssm:/notes/dev/userPoolId}
+    userPoolIdParam:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Name: /notes/${self:provider.stage}/userPoolArn
+        Type: String
+        Value: !GetAtt cognitoUserPoolNew.Arn
+
+functions:
+  # - ${file(./Notes-Get.yml)}
+  # - ${file(./Notes-Write-Delete.yml)}
+  lamAuthorizer:
+    handler: Authorizer.authorize
+
+  getNotes:
+    # name: getAllNotes
+    handler: UserC.getNotes
+    description: 'Get All notes'
+    events:
+      - http:
+          method: get
+          path: /notes
+
+  getNotesOfUser:
+    handler: UserC.getNotesOfUser
+    description: 'Get All notes of a user'
+    events:
+      - http:
+          method: get
+          path: /notes/user/{user_id}
+          authorizer:
+            name: userpool_authorizer
+            arn: !GetAtt cognitoUserPoolNew.Arn
+            type: COGNITO_USER_POOLS
+
+  getNote:
+    handler: UserC.getNote
+    events:
+      - http:
+          method: get
+          path: /notes/{id}
+
+  createNote:
+    handler: UserC.createNote
+    events:
+      - http:
+          method: post
+          path: /notes
+          authorizer:
+            name: lamAuthorizer
+            resultTtlInSeconds: 0
+
+  updateNote:
+    handler: UserC.updateNote
+    events:
+      - http:
+          method: put
+          path: /notes/{id}
+          authorizer:
+            name: lamAuthorizer
+            resultTtlInSeconds: 0
+
+  deleteNote:
+    handler: UserC.deleteNote
+    events:
+      - http:
+          method: delete
+          path: /notes/{id}
